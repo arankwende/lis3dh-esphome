@@ -4,6 +4,7 @@
 // plus configures INT1 for motion-wake from deep sleep.
 
 #include "lis3dh_motion.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
 namespace esphome::lis3dh_motion {
