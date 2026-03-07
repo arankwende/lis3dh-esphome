@@ -15,7 +15,7 @@ bool LIS3DHMotionComponent::reset_() {
   // CTRL_REG5: set BOOT bit (bit 7) to reboot memory content
   if (!this->write_byte(REG_CTRL5, 0x80))
     return false;
-  delay(10);
+  delayMicroseconds(10000);
 
   // Set all CTRL registers to default
   if (!this->write_byte(REG_CTRL1, 0x07))
@@ -120,7 +120,7 @@ void LIS3DHMotionComponent::setup() {
   }
 
   // Wait for sensor startup
-  delay(20);
+  delayMicroseconds(20000);
 
   // Reset HPF baseline with current orientation
   this->read_byte(REG_REFERENCE, &ref);
