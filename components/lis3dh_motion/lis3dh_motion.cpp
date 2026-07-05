@@ -15,7 +15,7 @@ bool LIS3DHMotionComponent::reset_() {
   // CTRL_REG5: set BOOT bit (bit 7) to reboot memory content
   if (!this->write_byte(REG_CTRL5, 0x80))
     return false;
-  delayMicroseconds(10000);
+  delay(10);
 
   // Set all CTRL registers to default
   if (!this->write_byte(REG_CTRL1, 0x07))
@@ -87,7 +87,7 @@ void LIS3DHMotionComponent::setup() {
   }
 
   // 5. Configure high-pass filter for interrupt (filters out gravity)
-  //    CTRL_REG2: HPM=00 (normal), HPCF=01, HPIS1=1
+  //    CTRL_REG2: HPM=00 (normal), HPCF=00, HPIS1=1
   if (!this->write_byte(REG_CTRL2, 0x01)) {
     this->mark_failed();
     return;
@@ -100,8 +100,7 @@ void LIS3DHMotionComponent::setup() {
   // 7. Configure motion interrupt on INT1
   this->write_byte(REG_INT1_THS, this->threshold_);
   this->write_byte(REG_INT1_DUR, this->duration_);
-  // INT1_CFG: OR combination of X/Y/Z high events (wake-up mode)
-  this->write_byte(REG_INT1_CFG, 0x2A);
+  this->write_byte(REG_INT1_CFG, INT1_CFG_MOTION);
   // CTRL_REG5: LIR_INT1=1 (latch interrupt)
   this->write_byte(REG_CTRL5, 0x08);
   // CTRL_REG3: I1_AOI1=1 (route event generator 1 to INT1 pin)
@@ -120,7 +119,7 @@ void LIS3DHMotionComponent::setup() {
   }
 
   // Wait for sensor startup
-  delayMicroseconds(20000);
+  delay(20);
 
   // Reset HPF baseline with current orientation
   this->read_byte(REG_REFERENCE, &ref);
@@ -190,6 +189,22 @@ void LIS3DHMotionComponent::update() {
 void LIS3DHMotionComponent::clear_interrupt() {
   uint8_t src;
   this->read_byte(REG_INT1_SRC, &src);
+}
+
+void LIS3DHMotionComponent::disable_motion_interrupt() {
+  // Stop the event generator, then clear any already-latched interrupt
+  // so INT1 drops and stays low.
+  this->write_byte(REG_INT1_CFG, 0x00);
+  this->clear_interrupt();
+  ESP_LOGD(TAG, "Motion interrupt disabled");
+}
+
+void LIS3DHMotionComponent::enable_motion_interrupt() {
+  this->write_byte(REG_INT1_THS, this->threshold_);
+  this->write_byte(REG_INT1_DUR, this->duration_);
+  this->write_byte(REG_INT1_CFG, INT1_CFG_MOTION);
+  this->clear_interrupt();
+  ESP_LOGD(TAG, "Motion interrupt enabled");
 }
 
 void LIS3DHMotionComponent::dump_config() {

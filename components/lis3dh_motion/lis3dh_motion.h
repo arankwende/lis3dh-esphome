@@ -26,6 +26,8 @@ static const uint8_t REG_INT1_THS     = 0x32;
 static const uint8_t REG_INT1_DUR     = 0x33;
 
 static const uint8_t LIS3DH_CHIP_ID   = 0x33;
+// INT1_CFG for wake-on-motion: OR combination of X/Y/Z high events
+static const uint8_t INT1_CFG_MOTION  = 0x2A;
 static const float GRAVITY_EARTH      = 9.80665f;
 // At +/-2g, 12-bit mode: 1 mg/digit = 0.001g per digit
 // Raw 16-bit left-justified: divide by 16 to get 12-bit, then * 0.001g
@@ -47,6 +49,12 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
 
   /// Clear the latched INT1 interrupt so it can trigger again.
   void clear_interrupt();
+  /// Stop generating motion interrupts on INT1 (e.g. before a deep sleep
+  /// that should only wake on a key press). Re-armed by enable_motion_interrupt()
+  /// or automatically on the next boot via setup().
+  void disable_motion_interrupt();
+  /// Re-arm motion interrupt generation on INT1.
+  void enable_motion_interrupt();
 
  protected:
   bool reset_();

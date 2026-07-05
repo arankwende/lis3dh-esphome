@@ -17,7 +17,6 @@ CONF_ACCEL_Y = "accel_y"
 CONF_ACCEL_Z = "accel_z"
 CONF_THRESHOLD = "threshold"
 CONF_DURATION = "duration"
-CONF_INT1_PIN = "int1_pin"
 
 ICON_ACCELERATION = "mdi:acceleration"
 
