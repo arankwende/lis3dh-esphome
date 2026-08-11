@@ -2,7 +2,9 @@
 
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
+#ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#endif
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/i2c/i2c.h"
 
@@ -38,8 +40,10 @@ static const uint8_t CTRL5_BOOT           = 0x80;  // reboot memory content
 static const uint8_t CTRL5_LIR_INT1       = 0x08;  // latch INT1 until INT1_SRC is read
 static const uint8_t TEMP_CFG_ADC_TEMP_EN = 0xC0;  // ADC_EN | TEMP_EN
 
-// INT1_CFG for wake-on-motion: OR combination of X/Y/Z high events
-static const uint8_t INT1_CFG_MOTION  = 0x2A;
+// INT1_CFG for direction-independent wake-on-motion: OR combination of the
+// high and low events on all three axes.
+static const uint8_t INT1_CFG_MOTION  = 0x3F;
+static const uint8_t INT1_SRC_IA      = 0x40;
 static const float GRAVITY_EARTH      = 9.80665f;
 
 // Full-scale range. Values match the CTRL_REG4 FS[1:0] field (bits 5:4).
@@ -61,6 +65,36 @@ enum LIS3DHDataRate : uint8_t {
   LIS3DH_ODR_400HZ = 0x7,
 };
 
+namespace detail {
+
+constexpr uint8_t accel_mg_per_digit(LIS3DHRange range) {
+  switch (range) {
+    case LIS3DH_RANGE_4G:
+      return 2;
+    case LIS3DH_RANGE_8G:
+      return 4;
+    case LIS3DH_RANGE_16G:
+      return 12;
+    case LIS3DH_RANGE_2G:
+    default:
+      return 1;
+  }
+}
+
+constexpr int16_t decode_accel_raw(uint8_t low, uint8_t high) {
+  return static_cast<int16_t>((static_cast<uint16_t>(high) << 8) | low) >> 4;
+}
+
+constexpr int16_t decode_temperature_raw(uint8_t low, uint8_t high) {
+  return static_cast<int16_t>((static_cast<uint16_t>(high) << 8) | low) >> 6;
+}
+
+constexpr float decode_temperature_celsius(uint8_t low, uint8_t high) {
+  return 25.0f + (decode_temperature_raw(low, high) / 4.0f);
+}
+
+}  // namespace detail
+
 class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
  public:
   void setup() override;
@@ -72,7 +106,9 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
   void set_accel_y_sensor(sensor::Sensor *s) { accel_y_sensor_ = s; }
   void set_accel_z_sensor(sensor::Sensor *s) { accel_z_sensor_ = s; }
   void set_temperature_sensor(sensor::Sensor *s) { temperature_sensor_ = s; }
+#ifdef USE_BINARY_SENSOR
   void set_motion_binary_sensor(binary_sensor::BinarySensor *s) { motion_binary_sensor_ = s; }
+#endif
 
   void set_threshold(uint8_t threshold) { threshold_ = threshold; }
   void set_duration(uint8_t duration) { duration_ = duration; }
@@ -99,9 +135,11 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
   sensor::Sensor *accel_y_sensor_{nullptr};
   sensor::Sensor *accel_z_sensor_{nullptr};
   sensor::Sensor *temperature_sensor_{nullptr};
+#ifdef USE_BINARY_SENSOR
   binary_sensor::BinarySensor *motion_binary_sensor_{nullptr};
   // Throttle for the INT1_SRC poll in loop() (ms).
   uint32_t last_int_poll_{0};
+#endif
 
   uint8_t threshold_{16};
   uint8_t duration_{0};
@@ -114,7 +152,7 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
 template<typename... Ts> class ClearInterruptAction : public Action<Ts...> {
  public:
   explicit ClearInterruptAction(LIS3DHMotionComponent *parent) : parent_(parent) {}
-  void play(Ts... x) override { this->parent_->clear_interrupt(); }
+  void play(const Ts &...x) override { this->parent_->clear_interrupt(); }
 
  protected:
   LIS3DHMotionComponent *parent_;
@@ -123,7 +161,7 @@ template<typename... Ts> class ClearInterruptAction : public Action<Ts...> {
 template<typename... Ts> class EnableMotionInterruptAction : public Action<Ts...> {
  public:
   explicit EnableMotionInterruptAction(LIS3DHMotionComponent *parent) : parent_(parent) {}
-  void play(Ts... x) override { this->parent_->enable_motion_interrupt(); }
+  void play(const Ts &...x) override { this->parent_->enable_motion_interrupt(); }
 
  protected:
   LIS3DHMotionComponent *parent_;
@@ -132,7 +170,7 @@ template<typename... Ts> class EnableMotionInterruptAction : public Action<Ts...
 template<typename... Ts> class DisableMotionInterruptAction : public Action<Ts...> {
  public:
   explicit DisableMotionInterruptAction(LIS3DHMotionComponent *parent) : parent_(parent) {}
-  void play(Ts... x) override { this->parent_->disable_motion_interrupt(); }
+  void play(const Ts &...x) override { this->parent_->disable_motion_interrupt(); }
 
  protected:
   LIS3DHMotionComponent *parent_;

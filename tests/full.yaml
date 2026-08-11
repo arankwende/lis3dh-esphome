@@ -1,0 +1,41 @@
+substitutions:
+  framework: arduino
+
+esphome:
+  name: lis3dh-full
+
+esp32:
+  board: esp32dev
+  framework:
+    type: ${framework}
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+logger:
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+
+sensor:
+  - platform: lis3dh_motion
+    id: accel
+    range: 8G
+    data_rate: 100HZ
+    accel_x:
+      name: Accel X
+      on_value:
+        then:
+          - lis3dh_motion.clear_interrupt: accel
+          - lis3dh_motion.disable_motion_interrupt: accel
+          - lis3dh_motion.enable_motion_interrupt: accel
+    temperature:
+      name: LIS3DH Temperature
+
+binary_sensor:
+  - platform: lis3dh_motion
+    lis3dh_motion_id: accel
+    name: Motion

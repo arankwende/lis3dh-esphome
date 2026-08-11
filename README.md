@@ -17,6 +17,8 @@ It provides:
 ```yaml
 external_components:
   - source: github://arankwende/lis3dh-esphome@main
+    # For production, replace main with a release tag or commit SHA so ESPHome
+    # upgrades cannot silently change the component.
 
 i2c:
   sda: GPIO20
@@ -40,6 +42,10 @@ sensor:
     temperature:
       name: "LIS3DH Temperature"
 ```
+
+The `main` reference tracks current development. Production installations
+should pin a published release tag or commit SHA and update that reference
+deliberately.
 
 ### Motion interrupt / wake from deep sleep
 
@@ -108,3 +114,22 @@ GPIO wake pin above — not both at once, as they consume the same latch.
 - **accel_x / accel_y / accel_z / temperature** (Optional): standard sensor
   schemas.
 - **update_interval** (Optional, default `60s`).
+
+## Development
+
+Regression configurations live in `tests/`. They cover a sensor-only build
+and the complete sensor, motion binary sensor, and automation-action build.
+Both configurations are compiled for the Arduino and ESP-IDF frameworks in
+GitHub Actions.
+
+To validate them locally with ESPHome 2026.5.1:
+
+```sh
+esphome -s framework arduino compile tests/sensor-only.yaml
+esphome -s framework arduino compile tests/full.yaml
+esphome -s framework esp-idf compile tests/sensor-only.yaml
+esphome -s framework esp-idf compile tests/full.yaml
+```
+
+Third-party code attribution is recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

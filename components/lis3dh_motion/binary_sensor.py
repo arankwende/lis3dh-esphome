@@ -5,8 +5,6 @@ from esphome.const import DEVICE_CLASS_MOTION
 
 from . import CONF_LIS3DH_MOTION_ID, LIS3DHMotionComponent
 
-DEPENDENCIES = ["lis3dh_motion"]
-
 CONFIG_SCHEMA = binary_sensor.binary_sensor_schema(
     device_class=DEVICE_CLASS_MOTION,
 ).extend(

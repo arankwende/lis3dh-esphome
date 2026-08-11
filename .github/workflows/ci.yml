@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - sensor-only
+          - full
+        framework:
+          - arduino
+          - esp-idf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install esphome==2026.5.1
+      - run: esphome -s framework ${{ matrix.framework }} compile tests/${{ matrix.config }}.yaml

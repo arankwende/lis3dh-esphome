@@ -1,0 +1,35 @@
+substitutions:
+  framework: arduino
+
+esphome:
+  name: lis3dh-sensor-only
+
+esp32:
+  board: esp32dev
+  framework:
+    type: ${framework}
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+logger:
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+
+sensor:
+  - platform: lis3dh_motion
+    id: accel
+    range: 16G
+    data_rate: 400HZ
+    accel_x:
+      name: Accel X
+    accel_y:
+      name: Accel Y
+    accel_z:
+      name: Accel Z
+    temperature:
+      name: LIS3DH Temperature

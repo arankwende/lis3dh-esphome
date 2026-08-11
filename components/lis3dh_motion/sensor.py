@@ -118,17 +118,22 @@ LIS3DH_ACTION_SCHEMA = automation.maybe_simple_id(
 
 
 @automation.register_action(
-    "lis3dh_motion.clear_interrupt", ClearInterruptAction, LIS3DH_ACTION_SCHEMA
+    "lis3dh_motion.clear_interrupt",
+    ClearInterruptAction,
+    LIS3DH_ACTION_SCHEMA,
+    synchronous=True,
 )
 @automation.register_action(
     "lis3dh_motion.enable_motion_interrupt",
     EnableMotionInterruptAction,
     LIS3DH_ACTION_SCHEMA,
+    synchronous=True,
 )
 @automation.register_action(
     "lis3dh_motion.disable_motion_interrupt",
     DisableMotionInterruptAction,
     LIS3DH_ACTION_SCHEMA,
+    synchronous=True,
 )
 async def lis3dh_action_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])

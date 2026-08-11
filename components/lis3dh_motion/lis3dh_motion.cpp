@@ -11,6 +11,13 @@ namespace esphome::lis3dh_motion {
 
 static const char *const TAG = "lis3dh_motion";
 
+static_assert(detail::accel_mg_per_digit(LIS3DH_RANGE_2G) == 1);
+static_assert(detail::accel_mg_per_digit(LIS3DH_RANGE_16G) == 12);
+static_assert(detail::decode_accel_raw(0xF0, 0x7F) == 2047);
+static_assert(detail::decode_accel_raw(0x00, 0x80) == -2048);
+static_assert(detail::decode_temperature_celsius(0x00, 0x01) == 26.0f);
+static_assert(detail::decode_temperature_celsius(0x00, 0xFF) == 24.0f);
+
 bool LIS3DHMotionComponent::reset_() {
   // CTRL_REG5: set BOOT bit to reboot memory content
   if (!this->write_byte(REG_CTRL5, CTRL5_BOOT))
@@ -45,9 +52,7 @@ bool LIS3DHMotionComponent::reset_() {
 
   // Clear any latched interrupt
   uint8_t dummy;
-  this->read_byte(REG_INT1_SRC, &dummy);
-
-  return true;
+  return this->read_byte(REG_INT1_SRC, &dummy);
 }
 
 uint16_t LIS3DHMotionComponent::threshold_mg_per_lsb_() const {
@@ -77,9 +82,7 @@ bool LIS3DHMotionComponent::arm_motion_interrupt_() {
 void LIS3DHMotionComponent::setup() {
   ESP_LOGD(TAG, "Setting up LIS3DH...");
 
-  // mg/digit in high-resolution mode per full-scale range (2/4/8/16g).
-  static const float MG_PER_DIGIT_HR[4] = {1.0f, 2.0f, 4.0f, 12.0f};
-  this->accel_scale_ = MG_PER_DIGIT_HR[this->range_] * 0.001f * GRAVITY_EARTH;
+  this->accel_scale_ = detail::accel_mg_per_digit(this->range_) * 0.001f * GRAVITY_EARTH;
 
   // 1. Verify chip ID
   uint8_t who_am_i;
@@ -112,7 +115,9 @@ void LIS3DHMotionComponent::setup() {
   //    (the ADC draws extra current, so leave it off otherwise).
   if (this->temperature_sensor_ != nullptr) {
     if (!this->write_byte(REG_TEMP_CFG, TEMP_CFG_ADC_TEMP_EN)) {
-      ESP_LOGW(TAG, "Failed to enable temperature sensor");
+      ESP_LOGE(TAG, "Failed to enable temperature sensor");
+      this->mark_failed();
+      return;
     }
   }
 
@@ -125,7 +130,11 @@ void LIS3DHMotionComponent::setup() {
 
   // 6. Read REFERENCE to reset HPF
   uint8_t ref;
-  this->read_byte(REG_REFERENCE, &ref);
+  if (!this->read_byte(REG_REFERENCE, &ref)) {
+    ESP_LOGE(TAG, "Failed to reset high-pass filter");
+    this->mark_failed();
+    return;
+  }
 
   // 7. Configure motion interrupt on INT1. This is the whole point of the
   //    component, so a failure here must mark the device failed.
@@ -140,7 +149,11 @@ void LIS3DHMotionComponent::setup() {
 
   // 8. Clear pending interrupt
   uint8_t int_src;
-  this->read_byte(REG_INT1_SRC, &int_src);
+  if (!this->read_byte(REG_INT1_SRC, &int_src)) {
+    ESP_LOGE(TAG, "Failed to clear pending interrupt");
+    this->mark_failed();
+    return;
+  }
 
   // 9. CTRL_REG1: ODR from config, LPen=0 (normal/HR mode), all axes enabled.
   //    Set LAST so measurements start after all config is done.
@@ -153,17 +166,27 @@ void LIS3DHMotionComponent::setup() {
   delay(20);
 
   // Reset HPF baseline with current orientation
-  this->read_byte(REG_REFERENCE, &ref);
+  bool startup_ok = this->read_byte(REG_REFERENCE, &ref);
   // Clear interrupt after startup
-  this->read_byte(REG_INT1_SRC, &int_src);
+  startup_ok = this->read_byte(REG_INT1_SRC, &int_src) && startup_ok;
+  if (!startup_ok) {
+    ESP_LOGE(TAG, "Failed to initialize high-pass filter baseline");
+    this->mark_failed();
+    return;
+  }
 
   // Verify register readback
-  uint8_t ctrl1, ctrl3, ctrl4, int1_cfg, int1_ths;
-  this->read_byte(REG_CTRL1, &ctrl1);
-  this->read_byte(REG_CTRL3, &ctrl3);
-  this->read_byte(REG_CTRL4, &ctrl4);
-  this->read_byte(REG_INT1_CFG, &int1_cfg);
-  this->read_byte(REG_INT1_THS, &int1_ths);
+  uint8_t ctrl1{0}, ctrl3{0}, ctrl4{0}, int1_cfg{0}, int1_ths{0};
+  bool readback_ok = this->read_byte(REG_CTRL1, &ctrl1);
+  readback_ok = this->read_byte(REG_CTRL3, &ctrl3) && readback_ok;
+  readback_ok = this->read_byte(REG_CTRL4, &ctrl4) && readback_ok;
+  readback_ok = this->read_byte(REG_INT1_CFG, &int1_cfg) && readback_ok;
+  readback_ok = this->read_byte(REG_INT1_THS, &int1_ths) && readback_ok;
+  if (!readback_ok) {
+    ESP_LOGE(TAG, "Failed to verify configuration");
+    this->mark_failed();
+    return;
+  }
 
   ESP_LOGD(TAG, "  CTRL1=0x%02X CTRL3=0x%02X CTRL4=0x%02X INT1_CFG=0x%02X THS=0x%02X",
            ctrl1, ctrl3, ctrl4, int1_cfg, int1_ths);
@@ -171,6 +194,7 @@ void LIS3DHMotionComponent::setup() {
 }
 
 void LIS3DHMotionComponent::loop() {
+#ifdef USE_BINARY_SENSOR
   if (this->motion_binary_sensor_ == nullptr)
     return;
   // Poll INT1_SRC a few times a second. Reading it also clears the latch
@@ -183,10 +207,13 @@ void LIS3DHMotionComponent::loop() {
   this->last_int_poll_ = now;
 
   uint8_t src;
-  if (!this->read_byte(REG_INT1_SRC, &src))
+  if (!this->read_byte(REG_INT1_SRC, &src)) {
+    this->status_set_warning();
     return;
+  }
   // Bit 6 (IA) = interrupt active.
-  this->motion_binary_sensor_->publish_state((src & 0x40) != 0);
+  this->motion_binary_sensor_->publish_state((src & INT1_SRC_IA) != 0);
+#endif
 }
 
 void LIS3DHMotionComponent::update() {
@@ -203,9 +230,9 @@ void LIS3DHMotionComponent::update() {
 
     // Data is 16-bit left-justified two's complement, in high-resolution
     // (12-bit) mode. Shift right by 4 to get the 12-bit value.
-    int16_t raw_x = (int16_t)((raw[1] << 8) | raw[0]) >> 4;
-    int16_t raw_y = (int16_t)((raw[3] << 8) | raw[2]) >> 4;
-    int16_t raw_z = (int16_t)((raw[5] << 8) | raw[4]) >> 4;
+    int16_t raw_x = detail::decode_accel_raw(raw[0], raw[1]);
+    int16_t raw_y = detail::decode_accel_raw(raw[2], raw[3]);
+    int16_t raw_z = detail::decode_accel_raw(raw[4], raw[5]);
 
     // Convert to m/s² using the scale for the configured range.
     float accel_x = raw_x * this->accel_scale_;
@@ -228,12 +255,13 @@ void LIS3DHMotionComponent::update() {
   if (this->temperature_sensor_ != nullptr) {
     uint8_t temp_raw[2];
     if (this->read_bytes(REG_OUT_ADC3_L | 0x80, temp_raw, 2)) {
-      int16_t temp_val = (int16_t)((temp_raw[1] << 8) | temp_raw[0]);
-      // In high-resolution mode, 10-bit left-justified: shift right by 6
-      temp_val >>= 6;
-      float temperature = 25.0f + (temp_val / 4.0f);
+      int16_t temp_val = detail::decode_temperature_raw(temp_raw[0], temp_raw[1]);
+      float temperature = detail::decode_temperature_celsius(temp_raw[0], temp_raw[1]);
       ESP_LOGD(TAG, "Temp: %.1f°C (raw=%d)", temperature, temp_val);
       this->temperature_sensor_->publish_state(temperature);
+    } else {
+      this->status_set_warning();
+      return;
     }
   }
 
@@ -280,7 +308,9 @@ void LIS3DHMotionComponent::dump_config() {
   LOG_SENSOR("  ", "Acceleration Y", this->accel_y_sensor_);
   LOG_SENSOR("  ", "Acceleration Z", this->accel_z_sensor_);
   LOG_SENSOR("  ", "Temperature", this->temperature_sensor_);
+#ifdef USE_BINARY_SENSOR
   LOG_BINARY_SENSOR("  ", "Motion", this->motion_binary_sensor_);
+#endif
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Communication failed!");
   }
