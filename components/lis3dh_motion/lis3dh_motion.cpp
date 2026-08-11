@@ -12,8 +12,8 @@ namespace esphome::lis3dh_motion {
 static const char *const TAG = "lis3dh_motion";
 
 bool LIS3DHMotionComponent::reset_() {
-  // CTRL_REG5: set BOOT bit (bit 7) to reboot memory content
-  if (!this->write_byte(REG_CTRL5, 0x80))
+  // CTRL_REG5: set BOOT bit to reboot memory content
+  if (!this->write_byte(REG_CTRL5, CTRL5_BOOT))
     return false;
   delay(10);
 
@@ -50,8 +50,36 @@ bool LIS3DHMotionComponent::reset_() {
   return true;
 }
 
+uint16_t LIS3DHMotionComponent::threshold_mg_per_lsb_() const {
+  // INT1_THS LSB weight per full-scale range (datasheet Table 4).
+  switch (this->range_) {
+    case LIS3DH_RANGE_4G:
+      return 32;
+    case LIS3DH_RANGE_8G:
+      return 62;
+    case LIS3DH_RANGE_16G:
+      return 186;
+    case LIS3DH_RANGE_2G:
+    default:
+      return 16;
+  }
+}
+
+bool LIS3DHMotionComponent::arm_motion_interrupt_() {
+  // Write every register even if an earlier one fails, then report.
+  bool ok = true;
+  ok = this->write_byte(REG_INT1_THS, this->threshold_) && ok;
+  ok = this->write_byte(REG_INT1_DUR, this->duration_) && ok;
+  ok = this->write_byte(REG_INT1_CFG, INT1_CFG_MOTION) && ok;
+  return ok;
+}
+
 void LIS3DHMotionComponent::setup() {
   ESP_LOGD(TAG, "Setting up LIS3DH...");
+
+  // mg/digit in high-resolution mode per full-scale range (2/4/8/16g).
+  static const float MG_PER_DIGIT_HR[4] = {1.0f, 2.0f, 4.0f, 12.0f};
+  this->accel_scale_ = MG_PER_DIGIT_HR[this->range_] * 0.001f * GRAVITY_EARTH;
 
   // 1. Verify chip ID
   uint8_t who_am_i;
@@ -74,21 +102,23 @@ void LIS3DHMotionComponent::setup() {
     return;
   }
 
-  // 3. CTRL_REG4: BDU=1, FS=00 (+/-2g), HR=1 (high-resolution 12-bit)
-  if (!this->write_byte(REG_CTRL4, 0x88)) {
+  // 3. CTRL_REG4: BDU=1, HR=1 (high-resolution 12-bit), FS from config
+  if (!this->write_byte(REG_CTRL4, CTRL4_BDU | CTRL4_HR | (this->range_ << 4))) {
     this->mark_failed();
     return;
   }
 
-  // 4. Enable ADC and temperature sensor
-  //    TEMP_CFG_REG: ADC_EN=1, TEMP_EN=1 (bits 7:6 = 11)
-  if (!this->write_byte(REG_TEMP_CFG, 0xC0)) {
-    ESP_LOGW(TAG, "Failed to enable temperature sensor");
+  // 4. Enable ADC and temperature sensor only if a temperature sensor is used
+  //    (the ADC draws extra current, so leave it off otherwise).
+  if (this->temperature_sensor_ != nullptr) {
+    if (!this->write_byte(REG_TEMP_CFG, TEMP_CFG_ADC_TEMP_EN)) {
+      ESP_LOGW(TAG, "Failed to enable temperature sensor");
+    }
   }
 
   // 5. Configure high-pass filter for interrupt (filters out gravity)
   //    CTRL_REG2: HPM=00 (normal), HPCF=00, HPIS1=1
-  if (!this->write_byte(REG_CTRL2, 0x01)) {
+  if (!this->write_byte(REG_CTRL2, CTRL2_HPIS1)) {
     this->mark_failed();
     return;
   }
@@ -97,23 +127,24 @@ void LIS3DHMotionComponent::setup() {
   uint8_t ref;
   this->read_byte(REG_REFERENCE, &ref);
 
-  // 7. Configure motion interrupt on INT1
-  this->write_byte(REG_INT1_THS, this->threshold_);
-  this->write_byte(REG_INT1_DUR, this->duration_);
-  this->write_byte(REG_INT1_CFG, INT1_CFG_MOTION);
-  // CTRL_REG5: LIR_INT1=1 (latch interrupt)
-  this->write_byte(REG_CTRL5, 0x08);
-  // CTRL_REG3: I1_AOI1=1 (route event generator 1 to INT1 pin)
-  this->write_byte(REG_CTRL3, 0x40);
+  // 7. Configure motion interrupt on INT1. This is the whole point of the
+  //    component, so a failure here must mark the device failed.
+  bool int_ok = this->arm_motion_interrupt_();
+  int_ok = this->write_byte(REG_CTRL5, CTRL5_LIR_INT1) && int_ok;  // latch INT1
+  int_ok = this->write_byte(REG_CTRL3, CTRL3_I1_AOI1) && int_ok;   // route AOI1 -> INT1
+  if (!int_ok) {
+    ESP_LOGE(TAG, "Failed to configure motion interrupt!");
+    this->mark_failed();
+    return;
+  }
 
   // 8. Clear pending interrupt
   uint8_t int_src;
   this->read_byte(REG_INT1_SRC, &int_src);
 
-  // 9. CTRL_REG1: ODR=0010 (10Hz), LPen=0 (normal/HR mode), all axes
-  //    0x27 = 0b00100111 = 10Hz, normal mode, XYZ enabled
-  //    Set LAST so measurements start after all config is done
-  if (!this->write_byte(REG_CTRL1, 0x27)) {
+  // 9. CTRL_REG1: ODR from config, LPen=0 (normal/HR mode), all axes enabled.
+  //    Set LAST so measurements start after all config is done.
+  if (!this->write_byte(REG_CTRL1, (this->data_rate_ << 4) | CTRL1_XYZ_EN)) {
     this->mark_failed();
     return;
   }
@@ -139,35 +170,58 @@ void LIS3DHMotionComponent::setup() {
   ESP_LOGD(TAG, "  LIS3DH configured successfully!");
 }
 
-void LIS3DHMotionComponent::update() {
-  // Read 6 bytes of acceleration data (X_L, X_H, Y_L, Y_H, Z_L, Z_H)
-  // Register auto-increments when MSB of sub-address is set
-  uint8_t raw[6];
-  if (!this->read_bytes(REG_OUT_X_L | 0x80, raw, 6)) {
-    this->status_set_warning();
+void LIS3DHMotionComponent::loop() {
+  if (this->motion_binary_sensor_ == nullptr)
     return;
+  // Poll INT1_SRC a few times a second. Reading it also clears the latch
+  // (LIR_INT1=1), so the sensor pulses true for the poll after a motion
+  // event. NOTE: this consumes the same latch used for GPIO/deep-sleep wake,
+  // so use the binary sensor OR the INT1 wake pin, not both at once.
+  const uint32_t now = millis();
+  if (now - this->last_int_poll_ < 100)
+    return;
+  this->last_int_poll_ = now;
+
+  uint8_t src;
+  if (!this->read_byte(REG_INT1_SRC, &src))
+    return;
+  // Bit 6 (IA) = interrupt active.
+  this->motion_binary_sensor_->publish_state((src & 0x40) != 0);
+}
+
+void LIS3DHMotionComponent::update() {
+  // Only read acceleration if at least one axis is published.
+  if (this->accel_x_sensor_ != nullptr || this->accel_y_sensor_ != nullptr ||
+      this->accel_z_sensor_ != nullptr) {
+    // Read 6 bytes of acceleration data (X_L, X_H, Y_L, Y_H, Z_L, Z_H)
+    // Register auto-increments when MSB of sub-address is set
+    uint8_t raw[6];
+    if (!this->read_bytes(REG_OUT_X_L | 0x80, raw, 6)) {
+      this->status_set_warning();
+      return;
+    }
+
+    // Data is 16-bit left-justified two's complement, in high-resolution
+    // (12-bit) mode. Shift right by 4 to get the 12-bit value.
+    int16_t raw_x = (int16_t)((raw[1] << 8) | raw[0]) >> 4;
+    int16_t raw_y = (int16_t)((raw[3] << 8) | raw[2]) >> 4;
+    int16_t raw_z = (int16_t)((raw[5] << 8) | raw[4]) >> 4;
+
+    // Convert to m/s² using the scale for the configured range.
+    float accel_x = raw_x * this->accel_scale_;
+    float accel_y = raw_y * this->accel_scale_;
+    float accel_z = raw_z * this->accel_scale_;
+
+    ESP_LOGD(TAG, "Accel: x=%.2f m/s², y=%.2f m/s², z=%.2f m/s²",
+             accel_x, accel_y, accel_z);
+
+    if (this->accel_x_sensor_ != nullptr)
+      this->accel_x_sensor_->publish_state(accel_x);
+    if (this->accel_y_sensor_ != nullptr)
+      this->accel_y_sensor_->publish_state(accel_y);
+    if (this->accel_z_sensor_ != nullptr)
+      this->accel_z_sensor_->publish_state(accel_z);
   }
-
-  // Data is 16-bit left-justified two's complement, in high-resolution (12-bit) mode
-  // Shift right by 4 to get the 12-bit value
-  int16_t raw_x = (int16_t)((raw[1] << 8) | raw[0]) >> 4;
-  int16_t raw_y = (int16_t)((raw[3] << 8) | raw[2]) >> 4;
-  int16_t raw_z = (int16_t)((raw[5] << 8) | raw[4]) >> 4;
-
-  // Convert to m/s² (at +/-2g, 12-bit: 1 mg/digit)
-  float accel_x = raw_x * ACCEL_SCALE_2G;
-  float accel_y = raw_y * ACCEL_SCALE_2G;
-  float accel_z = raw_z * ACCEL_SCALE_2G;
-
-  ESP_LOGD(TAG, "Accel: x=%.2f m/s², y=%.2f m/s², z=%.2f m/s²",
-           accel_x, accel_y, accel_z);
-
-  if (this->accel_x_sensor_ != nullptr)
-    this->accel_x_sensor_->publish_state(accel_x);
-  if (this->accel_y_sensor_ != nullptr)
-    this->accel_y_sensor_->publish_state(accel_y);
-  if (this->accel_z_sensor_ != nullptr)
-    this->accel_z_sensor_->publish_state(accel_z);
 
   // Read temperature (ADC3 when temp sensor enabled)
   // LIS3DH temp is relative: output 0 = 25°C, 1 digit = 1°C
@@ -188,21 +242,27 @@ void LIS3DHMotionComponent::update() {
 
 void LIS3DHMotionComponent::clear_interrupt() {
   uint8_t src;
-  this->read_byte(REG_INT1_SRC, &src);
+  if (!this->read_byte(REG_INT1_SRC, &src)) {
+    ESP_LOGW(TAG, "Failed to clear INT1 latch");
+  }
 }
 
 void LIS3DHMotionComponent::disable_motion_interrupt() {
   // Stop the event generator, then clear any already-latched interrupt
   // so INT1 drops and stays low.
-  this->write_byte(REG_INT1_CFG, 0x00);
+  if (!this->write_byte(REG_INT1_CFG, 0x00)) {
+    ESP_LOGW(TAG, "Failed to disable motion interrupt");
+    return;
+  }
   this->clear_interrupt();
   ESP_LOGD(TAG, "Motion interrupt disabled");
 }
 
 void LIS3DHMotionComponent::enable_motion_interrupt() {
-  this->write_byte(REG_INT1_THS, this->threshold_);
-  this->write_byte(REG_INT1_DUR, this->duration_);
-  this->write_byte(REG_INT1_CFG, INT1_CFG_MOTION);
+  if (!this->arm_motion_interrupt_()) {
+    ESP_LOGW(TAG, "Failed to enable motion interrupt");
+    return;
+  }
   this->clear_interrupt();
   ESP_LOGD(TAG, "Motion interrupt enabled");
 }
@@ -211,12 +271,16 @@ void LIS3DHMotionComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "LIS3DH Accelerometer:");
   LOG_I2C_DEVICE(this);
   LOG_UPDATE_INTERVAL(this);
-  ESP_LOGCONFIG(TAG, "  Motion threshold: %u (~%umg)", this->threshold_, this->threshold_ * 16);
+  static const uint8_t RANGE_G[4] = {2, 4, 8, 16};
+  ESP_LOGCONFIG(TAG, "  Range: +/-%ug", RANGE_G[this->range_]);
+  uint16_t mg = this->threshold_mg_per_lsb_();
+  ESP_LOGCONFIG(TAG, "  Motion threshold: %u (~%umg)", this->threshold_, this->threshold_ * mg);
   ESP_LOGCONFIG(TAG, "  Motion duration: %u ODR cycles", this->duration_);
   LOG_SENSOR("  ", "Acceleration X", this->accel_x_sensor_);
   LOG_SENSOR("  ", "Acceleration Y", this->accel_y_sensor_);
   LOG_SENSOR("  ", "Acceleration Z", this->accel_z_sensor_);
   LOG_SENSOR("  ", "Temperature", this->temperature_sensor_);
+  LOG_BINARY_SENSOR("  ", "Motion", this->motion_binary_sensor_);
   if (this->is_failed()) {
     ESP_LOGE(TAG, "  Communication failed!");
   }

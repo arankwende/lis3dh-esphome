@@ -5,7 +5,8 @@ accelerometer used in the [OMOTE](https://github.com/CoretechR/OMOTE) remote).
 
 It provides:
 
-- `accel_x` / `accel_y` / `accel_z` sensors (m/s², ±2g high-resolution mode)
+- `accel_x` / `accel_y` / `accel_z` sensors (m/s², selectable ±2/4/8/16g,
+  high-resolution mode)
 - `temperature` sensor (the LIS3DH's internal relative temperature sensor)
 - A **wake-on-motion interrupt on INT1** (latched, high-pass filtered so
   gravity/orientation doesn't matter) — ideal as an `esp32_ext1_wakeup`
@@ -25,8 +26,10 @@ sensor:
   - platform: lis3dh_motion
     id: accel
     address: 0x19        # 0x18 if SDO/SA0 is pulled low
+    range: 2G            # ±2G / 4G / 8G / 16G
+    data_rate: 10HZ      # 1/10/25/50/100/200/400 HZ
     threshold: 16        # motion threshold, 1 LSB = 16mg at ±2g (16 ≈ 256mg)
-    duration: 0          # minimum event duration in ODR cycles (10Hz ODR)
+    duration: 0          # minimum event duration in ODR cycles
     update_interval: 60s
     accel_x:
       name: "Accel X"
@@ -60,24 +63,48 @@ binary_sensor:
     on_press:
       - logger.log: "Motion!"
       # Clear the latch so the next motion can retrigger
-      - lambda: 'id(accel).clear_interrupt();'
+      - lis3dh_motion.clear_interrupt: accel
 ```
 
-### Lambda API
+### Automation actions
 
-| Method | Purpose |
+| Action | Purpose |
 |---|---|
-| `id(accel).clear_interrupt();` | Clear the latched INT1 so it can fire again |
-| `id(accel).disable_motion_interrupt();` | Stop INT1 events (e.g. before a deep sleep that should ignore motion) |
-| `id(accel).enable_motion_interrupt();` | Re-arm INT1 motion events (also re-armed automatically at boot) |
+| `lis3dh_motion.clear_interrupt: accel` | Clear the latched INT1 so it can fire again |
+| `lis3dh_motion.disable_motion_interrupt: accel` | Stop INT1 events (e.g. before a deep sleep that should ignore motion) |
+| `lis3dh_motion.enable_motion_interrupt: accel` | Re-arm INT1 motion events (also re-armed automatically at boot) |
+
+The same operations are available from lambdas as
+`id(accel).clear_interrupt();`, `id(accel).disable_motion_interrupt();` and
+`id(accel).enable_motion_interrupt();`.
+
+### Motion binary sensor (no extra wire)
+
+If you don't need deep-sleep wake, you can read the interrupt over I2C instead
+of wiring INT1 to a GPIO. Add a `binary_sensor` that references the accelerometer:
+
+```yaml
+binary_sensor:
+  - platform: lis3dh_motion
+    lis3dh_motion_id: accel
+    name: "Motion"
+```
+
+It polls `INT1_SRC` a few times a second and reports motion. Because reading
+`INT1_SRC` clears the latch, use **either** this binary sensor **or** the INT1
+GPIO wake pin above — not both at once, as they consume the same latch.
 
 ## Configuration variables
 
 - **address** (Optional, default `0x19`): I2C address.
-- **threshold** (Optional, 1–127, default `16`): INT1 motion threshold,
-  16mg per LSB at ±2g.
+- **range** (Optional, default `2G`): full-scale range — `2G`, `4G`, `8G` or
+  `16G`. Larger ranges measure stronger accelerations but reduce resolution.
+- **data_rate** (Optional, default `10HZ`): output data rate — `1HZ`, `10HZ`,
+  `25HZ`, `50HZ`, `100HZ`, `200HZ` or `400HZ`. Also sets the `duration` tick.
+- **threshold** (Optional, 1–127, default `16`): INT1 motion threshold. LSB
+  weight depends on `range` (16mg at ±2g, 32mg at ±4g, 62mg at ±8g, 186mg at ±16g).
 - **duration** (Optional, 0–127, default `0`): INT1 minimum duration in
-  ODR cycles (ODR is 10Hz, so 1 = 100ms).
+  ODR cycles (at 10Hz, 1 = 100ms).
 - **accel_x / accel_y / accel_z / temperature** (Optional): standard sensor
   schemas.
 - **update_interval** (Optional, default `60s`).
