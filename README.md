@@ -49,7 +49,8 @@ deliberately.
 
 ### Motion interrupt / wake from deep sleep
 
-INT1 goes **high** on motion and stays latched until cleared. Wire it to an
+INT1 goes **high** on motion (or **low** with `interrupt_active_low: true`)
+and stays latched until cleared. Wire it to an
 RTC-capable GPIO and use it both as a binary sensor and a deep-sleep wake
 source:
 
@@ -111,6 +112,10 @@ GPIO wake pin above — not both at once, as they consume the same latch.
   weight depends on `range` (16mg at ±2g, 32mg at ±4g, 62mg at ±8g, 186mg at ±16g).
 - **duration** (Optional, 0–127, default `0`): INT1 minimum duration in
   ODR cycles (at 10Hz, 1 = 100ms).
+- **interrupt_active_low** (Optional, default `false`): drive INT1 active-low
+  instead of active-high. Use this on the OMOTE Rev5 so INT1 (GPIO2) and the
+  TCA8418 INT (GPIO8) can share one `esp32_ext1_wakeup` with `mode: ANY_LOW`,
+  which is how the original OMOTE firmware wakes.
 - **accel_x / accel_y / accel_z / temperature** (Optional): standard sensor
   schemas.
 - **update_interval** (Optional, default `60s`).

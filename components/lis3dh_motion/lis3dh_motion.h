@@ -38,11 +38,16 @@ static const uint8_t CTRL4_BDU            = 0x80;  // block data update
 static const uint8_t CTRL4_HR             = 0x08;  // high-resolution (12-bit) mode
 static const uint8_t CTRL5_BOOT           = 0x80;  // reboot memory content
 static const uint8_t CTRL5_LIR_INT1       = 0x08;  // latch INT1 until INT1_SRC is read
+static const uint8_t CTRL6_INT_POLARITY   = 0x02;  // 1 = INT1/INT2 pins active-low
 static const uint8_t TEMP_CFG_ADC_TEMP_EN = 0xC0;  // ADC_EN | TEMP_EN
 
 // INT1_CFG for direction-independent wake-on-motion: OR combination of the
-// high and low events on all three axes.
-static const uint8_t INT1_CFG_MOTION  = 0x3F;
+// HIGH events on all three axes (ZHIE | YHIE | XHIE), per ST AN3308.
+// The comparison is on |a|, so high events already cover both directions.
+// Do NOT enable the LOW events (XLIE/YLIE/ZLIE): they fire when |a| is
+// *below* the threshold, which with the high-pass filter is true whenever
+// the device is at rest, so INT1 would be asserted permanently.
+static const uint8_t INT1_CFG_MOTION  = 0x2A;
 static const uint8_t INT1_SRC_IA      = 0x40;
 static const float GRAVITY_EARTH      = 9.80665f;
 
@@ -114,6 +119,7 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
   void set_duration(uint8_t duration) { duration_ = duration; }
   void set_range(LIS3DHRange range) { range_ = range; }
   void set_data_rate(LIS3DHDataRate data_rate) { data_rate_ = data_rate; }
+  void set_interrupt_active_low(bool active_low) { interrupt_active_low_ = active_low; }
 
   /// Clear the latched INT1 interrupt so it can trigger again.
   void clear_interrupt();
@@ -145,6 +151,7 @@ class LIS3DHMotionComponent : public PollingComponent, public i2c::I2CDevice {
   uint8_t duration_{0};
   LIS3DHRange range_{LIS3DH_RANGE_2G};
   LIS3DHDataRate data_rate_{LIS3DH_ODR_10HZ};
+  bool interrupt_active_low_{false};
   // m/s² per digit for the configured range; computed in setup().
   float accel_scale_{GRAVITY_EARTH * 0.001f};
 };

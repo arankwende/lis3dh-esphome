@@ -25,6 +25,7 @@ sensor:
     id: accel
     range: 8G
     data_rate: 100HZ
+    interrupt_active_low: true
     accel_x:
       name: Accel X
       on_value:

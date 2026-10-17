@@ -141,6 +141,7 @@ void LIS3DHMotionComponent::setup() {
   bool int_ok = this->arm_motion_interrupt_();
   int_ok = this->write_byte(REG_CTRL5, CTRL5_LIR_INT1) && int_ok;  // latch INT1
   int_ok = this->write_byte(REG_CTRL3, CTRL3_I1_AOI1) && int_ok;   // route AOI1 -> INT1
+  int_ok = this->write_byte(REG_CTRL6, this->interrupt_active_low_ ? CTRL6_INT_POLARITY : 0x00) && int_ok;
   if (!int_ok) {
     ESP_LOGE(TAG, "Failed to configure motion interrupt!");
     this->mark_failed();
@@ -269,7 +270,11 @@ void LIS3DHMotionComponent::update() {
 }
 
 void LIS3DHMotionComponent::clear_interrupt() {
-  uint8_t src;
+  // Reading REFERENCE resets the high-pass filter to the current orientation
+  // (HPM=00), so a recent tilt that is still decaying through the filter
+  // cannot immediately re-trigger the latch (e.g. right before deep sleep).
+  uint8_t ref, src;
+  this->read_byte(REG_REFERENCE, &ref);
   if (!this->read_byte(REG_INT1_SRC, &src)) {
     ESP_LOGW(TAG, "Failed to clear INT1 latch");
   }
@@ -304,6 +309,7 @@ void LIS3DHMotionComponent::dump_config() {
   uint16_t mg = this->threshold_mg_per_lsb_();
   ESP_LOGCONFIG(TAG, "  Motion threshold: %u (~%umg)", this->threshold_, this->threshold_ * mg);
   ESP_LOGCONFIG(TAG, "  Motion duration: %u ODR cycles", this->duration_);
+  ESP_LOGCONFIG(TAG, "  INT1 polarity: active-%s", this->interrupt_active_low_ ? "low" : "high");
   LOG_SENSOR("  ", "Acceleration X", this->accel_x_sensor_);
   LOG_SENSOR("  ", "Acceleration Y", this->accel_y_sensor_);
   LOG_SENSOR("  ", "Acceleration Z", this->accel_z_sensor_);

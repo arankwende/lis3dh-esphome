@@ -21,6 +21,7 @@ CONF_ACCEL_Z = "accel_z"
 CONF_THRESHOLD = "threshold"
 CONF_DURATION = "duration"
 CONF_DATA_RATE = "data_rate"
+CONF_INTERRUPT_ACTIVE_LOW = "interrupt_active_low"
 
 ICON_ACCELERATION = "mdi:acceleration"
 
@@ -72,6 +73,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_DATA_RATE, default="10HZ"): cv.enum(
                 DATA_RATES, upper=True
             ),
+            cv.Optional(CONF_INTERRUPT_ACTIVE_LOW, default=False): cv.boolean,
         }
     )
     .extend(cv.polling_component_schema("60s"))
@@ -88,6 +90,7 @@ async def to_code(config):
     cg.add(var.set_duration(config[CONF_DURATION]))
     cg.add(var.set_range(config[CONF_RANGE]))
     cg.add(var.set_data_rate(config[CONF_DATA_RATE]))
+    cg.add(var.set_interrupt_active_low(config[CONF_INTERRUPT_ACTIVE_LOW]))
 
     for d in ["x", "y", "z"]:
         key = f"accel_{d}"
