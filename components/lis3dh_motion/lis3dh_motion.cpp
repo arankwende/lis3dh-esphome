@@ -121,57 +121,54 @@ void LIS3DHMotionComponent::setup() {
     }
   }
 
-  // 5. Configure high-pass filter for interrupt (filters out gravity)
-  //    CTRL_REG2: HPM=00 (normal), HPCF=00, HPIS1=1
+  // 5. Set INT1 polarity BEFORE routing AOI1 to INT1 so the pin idles at the
+  //    right level (HIGH when active-low) instead of glitching during setup.
+  if (!this->write_byte(REG_CTRL6, this->interrupt_active_low_ ? CTRL6_INT_POLARITY : 0x00)) {
+    this->mark_failed();
+    return;
+  }
+
+  // 6. Configure high-pass filter for interrupt (filters out gravity)
+  //    CTRL_REG2: HPM=00 (normal, reset by reading REFERENCE), HPCF=00, HPIS1=1
   if (!this->write_byte(REG_CTRL2, CTRL2_HPIS1)) {
     this->mark_failed();
     return;
   }
 
-  // 6. Read REFERENCE to reset HPF
-  uint8_t ref;
-  if (!this->read_byte(REG_REFERENCE, &ref)) {
-    ESP_LOGE(TAG, "Failed to reset high-pass filter");
+  // 7. Start the sensor at 100Hz briefly so the ADC/MEMS pipeline clocks in
+  //    several real gravity samples quickly, then switch to the configured ODR.
+  if (!this->write_byte(REG_CTRL1, (LIS3DH_ODR_100HZ << 4) | CTRL1_XYZ_EN)) {
     this->mark_failed();
     return;
   }
+  delay(35);
 
-  // 7. Configure motion interrupt on INT1. This is the whole point of the
-  //    component, so a failure here must mark the device failed.
-  bool int_ok = this->arm_motion_interrupt_();
-  int_ok = this->write_byte(REG_CTRL5, CTRL5_LIR_INT1) && int_ok;  // latch INT1
-  int_ok = this->write_byte(REG_CTRL3, CTRL3_I1_AOI1) && int_ok;   // route AOI1 -> INT1
-  int_ok = this->write_byte(REG_CTRL6, this->interrupt_active_low_ ? CTRL6_INT_POLARITY : 0x00) && int_ok;
-  if (!int_ok) {
-    ESP_LOGE(TAG, "Failed to configure motion interrupt!");
-    this->mark_failed();
-    return;
-  }
-
-  // 8. Clear pending interrupt
-  uint8_t int_src;
-  if (!this->read_byte(REG_INT1_SRC, &int_src)) {
-    ESP_LOGE(TAG, "Failed to clear pending interrupt");
-    this->mark_failed();
-    return;
-  }
-
-  // 9. CTRL_REG1: ODR from config, LPen=0 (normal/HR mode), all axes enabled.
-  //    Set LAST so measurements start after all config is done.
   if (!this->write_byte(REG_CTRL1, (this->data_rate_ << 4) | CTRL1_XYZ_EN)) {
     this->mark_failed();
     return;
   }
+  delay(45);
 
-  // Wait for sensor startup
-  delay(20);
-
-  // Reset HPF baseline with current orientation
+  // 8. Reset HPF baseline with the settled current 1g orientation
+  uint8_t ref = 0;
+  uint8_t int_src = 0;
   bool startup_ok = this->read_byte(REG_REFERENCE, &ref);
-  // Clear interrupt after startup
+  // Wait for one sample clock so the HPF output updates to ~0mg
+  delay(45);
   startup_ok = this->read_byte(REG_INT1_SRC, &int_src) && startup_ok;
   if (!startup_ok) {
     ESP_LOGE(TAG, "Failed to initialize high-pass filter baseline");
+    this->mark_failed();
+    return;
+  }
+
+  // 9. Arm motion interrupt on INT1 LAST, after HPF baseline is settled at 0mg.
+  bool int_ok = this->arm_motion_interrupt_();
+  int_ok = this->write_byte(REG_CTRL5, CTRL5_LIR_INT1) && int_ok;  // latch INT1
+  int_ok = this->read_byte(REG_INT1_SRC, &int_src) && int_ok;      // clear any edge latch
+  int_ok = this->write_byte(REG_CTRL3, CTRL3_I1_AOI1) && int_ok;   // route AOI1 -> INT1
+  if (!int_ok) {
+    ESP_LOGE(TAG, "Failed to configure motion interrupt!");
     this->mark_failed();
     return;
   }
@@ -270,11 +267,11 @@ void LIS3DHMotionComponent::update() {
 }
 
 void LIS3DHMotionComponent::clear_interrupt() {
-  // Reading REFERENCE resets the high-pass filter to the current orientation
-  // (HPM=00), so a recent tilt that is still decaying through the filter
-  // cannot immediately re-trigger the latch (e.g. right before deep sleep).
-  uint8_t ref, src;
-  this->read_byte(REG_REFERENCE, &ref);
+  // Only read INT1_SRC to release the hardware latch. Do NOT read REFERENCE
+  // here: clear_interrupt() is called from on_press right when acceleration
+  // exceeds threshold, so reading REFERENCE here would latch the mid-motion
+  // acceleration peak as the new baseline and cause a false trigger at rest.
+  uint8_t src;
   if (!this->read_byte(REG_INT1_SRC, &src)) {
     ESP_LOGW(TAG, "Failed to clear INT1 latch");
   }
@@ -282,7 +279,7 @@ void LIS3DHMotionComponent::clear_interrupt() {
 
 void LIS3DHMotionComponent::disable_motion_interrupt() {
   // Stop the event generator, then clear any already-latched interrupt
-  // so INT1 drops and stays low.
+  // so INT1 drops and stays de-asserted.
   if (!this->write_byte(REG_INT1_CFG, 0x00)) {
     ESP_LOGW(TAG, "Failed to disable motion interrupt");
     return;
@@ -292,6 +289,10 @@ void LIS3DHMotionComponent::disable_motion_interrupt() {
 }
 
 void LIS3DHMotionComponent::enable_motion_interrupt() {
+  // Disarm while re-baselining the HPF at rest, then clear latch and arm.
+  this->write_byte(REG_INT1_CFG, 0x00);
+  uint8_t ref = 0;
+  this->read_byte(REG_REFERENCE, &ref);
   if (!this->arm_motion_interrupt_()) {
     ESP_LOGW(TAG, "Failed to enable motion interrupt");
     return;
